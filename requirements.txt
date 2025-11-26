@@ -5,3 +5,4 @@ langchain-groq
 chromadb
 pypdf
 langchain-community
+sentence-transformers
