@@ -1,86 +1,95 @@
 import streamlit as st
+import os
+import tempfile
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # --- AYARLAR ---
-# GROQ ANAHTARINI BURAYA YAPIŞTIR (gsk_... ile başlar)
+# GROQ ANAHTARINI BURAYA YAPIŞTIR
 GROQ_API_KEY = "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"
 
-# Sayfa Ayarları
-st.set_page_config(page_title="Süper Hızlı Asistan", layout="wide")
-st.title("⚡ Süper Hızlı Doküman Asistanı")
+st.set_page_config(page_title="PDF Asistanı", layout="wide")
+st.title("☁️ Canlı PDF Asistanı")
+st.markdown("Sol taraftan bir PDF yükleyin ve hemen soru sormaya başlayın!")
 
-# Yan Menü
+# Yan Menü - Dosya Yükleme
 with st.sidebar:
-    st.success("Motor: Llama 3.3 (Groq)")
-    st.info("Dünyanın en yeni ve hızlı açık kaynak modeli.")
+    st.header("📂 Dosya Yükle")
+    uploaded_file = st.file_uploader("Bir PDF dosyası seçin", type="pdf")
+    st.info("Motor: Llama 3.3 (Groq)")
+    st.warning("Not: Site yenilendiğinde veriler sıfırlanır.")
 
-# 1. Veritabanını Yükle
+# Veritabanı Hazırlama Fonksiyonu (Bulut İçin Özel)
 @st.cache_resource
-def veritabani_yukle():
-    try:
-        embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        db = Chroma(persist_directory="./chroma_db", embedding_function=embedding_model)
-        return db
-    except Exception as e:
-        return None
+def pdf_islee(file):
+    # Geçici bir klasör oluşturup dosyayı oraya kaydediyoruz
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_file.write(file.read())
+        tmp_path = tmp_file.name
 
-db = veritabani_yukle()
+    # PDF'i Oku ve Parçala
+    loader = PyPDFLoader(tmp_path)
+    docs = loader.load()
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splits = text_splitter.split_documents(docs)
 
-if not db:
-    st.error("Veritabanı bulunamadı.")
-    st.stop()
+    # Veritabanına Göm (Hafızada tutuyoruz, klasöre yazmıyoruz)
+    embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    db = Chroma.from_documents(documents=splits, embedding=embedding_model)
+    
+    # Geçici dosyayı temizle
+    os.remove(tmp_path)
+    return db
 
-# 2. Yapay Zekayı Başlat (GÜNCEL MODEL)
-try:
-    llm = ChatGroq(
-        temperature=0, 
-        # !!! İŞTE DEĞİŞİKLİK BURADA !!!
-        # Eski model yerine en yeni ve en güçlü modeli yazdık.
-        model_name="llama-3.3-70b-versatile", 
-        api_key=GROQ_API_KEY
-    )
-except Exception as e:
-    st.error(f"API Anahtarı hatası: {e}")
-    st.stop()
+# --- ANA AKIŞ ---
 
-# 3. Arayüz
-soru = st.text_input("Sorunuzu yazın:", placeholder="Örn: Proje yürütücüsü kim?")
+if uploaded_file is None:
+    # Dosya yoksa uyarı göster
+    st.info("👈 Lütfen sol menüden bir PDF dosyası yükleyin.")
+    st.image("https://cdn-icons-png.flaticon.com/512/337/337946.png", width=100) # Ok işareti
 
-if st.button("Soruyu Gönder 🚀"):
-    if not soru:
-        st.warning("Lütfen bir soru yazın.")
-    else:
-        with st.spinner("Dokümanlar taranıyor..."):
-            sonuclar = db.similarity_search(soru, k=4)
-            bilgi_havuzu = ""
-            for belge in sonuclar:
-                bilgi_havuzu += belge.page_content + "\n\n"
-        
-        with st.spinner("Llama 3.3 düşünüyor..."):
-            try:
-                prompt = f"""
-                Aşağıdaki BİLGİ'ye göre SORU'yu Türkçe cevapla.
-                Bilgi içinde cevap yoksa "Dokümanlarda bulamadım" de.
+else:
+    # Dosya varsa işle
+    with st.spinner("PDF analiz ediliyor... (Bu işlem sadece bir kez yapılır)"):
+        try:
+            db = pdf_islee(uploaded_file)
+            st.success("✅ PDF yüklendi! Sorunuzu sorabilirsiniz.")
+            
+            # Soru Kutusu
+            soru = st.text_input("Sorunuzu yazın:", placeholder="Örn: Bu projenin amacı ne?")
+            
+            if st.button("Gönder 🚀") and soru:
                 
-                BİLGİ:
-                {bilgi_havuzu}
+                # Yapay Zeka Ayarı
+                llm = ChatGroq(temperature=0, model_name="llama-3.3-70b-versatile", api_key=GROQ_API_KEY)
                 
-                SORU:
-                {soru}
-                """
-                
-                cevap = llm.invoke(prompt)
-                
-                st.success("✅ Cevap:")
-                st.write(cevap.content)
-                
-                with st.expander("Kaynak Paragraflar"):
-                    for i, b in enumerate(sonuclar):
-                        st.markdown(f"**Parça {i+1}:**")
-                        st.caption(b.page_content)
-                        st.divider()
+                with st.spinner("Cevap hazırlanıyor..."):
+                    # Benzerlik Araması
+                    sonuclar = db.similarity_search(soru, k=4)
+                    context = "\n\n".join([doc.page_content for doc in sonuclar])
+                    
+                    # Cevap Üretme
+                    prompt = f"""
+                    Aşağıdaki DOKÜMAN BİLGİSİ'ne göre SORU'yu Türkçe cevapla.
+                    Bilgi yoksa "Dokümanda bulamadım" de.
+                    
+                    DOKÜMAN BİLGİSİ:
+                    {context}
+                    
+                    SORU:
+                    {soru}
+                    """
+                    cevap = llm.invoke(prompt)
+                    
+                    st.write("### 🤖 Cevap:")
+                    st.write(cevap.content)
+                    
+                    with st.expander("Kaynaklar"):
+                         for i, b in enumerate(sonuclar):
+                            st.caption(f"**Parça {i+1}:** {b.page_content[:200]}...")
 
-            except Exception as e:
-                st.error(f"Hata oluştu: {e}")
+        except Exception as e:
+            st.error(f"Bir hata oluştu: {e}")
